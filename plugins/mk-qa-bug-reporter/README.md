@@ -76,6 +76,8 @@ python plugins/mk-qa-bug-reporter/examples/demo_via_mcp.py /tmp/demo
 python plugins/mk-qa-bug-reporter/examples/demo_via_mcp.py <資料夾> --isolate-stdin
 ```
 
+完整的範例輸出放在 [`examples/sample_output/`](examples/sample_output/)，是跑完兩次後實際產生的兩份報告（路徑已換成示意用的 `C:\path\to\your-project`）。
+
 產生的報告大致長這樣（節錄）：
 
 ```markdown
@@ -99,7 +101,7 @@ python plugins/mk-qa-bug-reporter/examples/demo_via_mcp.py <資料夾> --isolate
 
 ### Windows 注意事項
 
-開發這個插件時，在 Windows 11 + mk-qa-master 1.5.0 上遇到一個**和本插件無關、屬於 mk-qa-master 本身**的狀況：
+開發這個插件時，在 Windows 11 + mk-qa-master 1.5.0 上遇到一個**和本插件無關、屬於 mk-qa-master 本身**的狀況（完整報告：[`docs/bug-reports/windows-run-tests-stdin-hang.md`](../../docs/bug-reports/windows-run-tests-stdin-hang.md)）：
 
 - **現象：** 透過 MCP（stdio）呼叫 `run_tests` 時，pytest 子行程啟動後卡住不動，`run_tests` 一直不回應。同樣的測試直接在終端機用 `pytest` 跑，6 秒就結束。
 - **原因（已用對照實驗確認）：** mk-qa-master 啟動 pytest 時沒有指定 stdin，子行程因此繼承了 MCP server 的 stdin 管線。只要把子行程的 stdin 改成 `DEVNULL`，`run_tests` 就能正常完成。
