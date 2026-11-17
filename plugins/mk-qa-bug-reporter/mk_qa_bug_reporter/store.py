@@ -73,6 +73,21 @@ class IndexStore:
         self.data["bugs"][report.fingerprint].setdefault("refs", {})[submitter_name] = ref
         report.refs[submitter_name] = ref
 
+    def record_submit(
+        self, report: BugReport, submitter_name: str, ok: bool, now: str, error: str = "", dry_run: bool = False
+    ) -> None:
+        """記下每個管道最近一次送出的結果，方便事後查「哪一份沒送成功」。
+
+        error 必須是已經遮掉機密的文字。dry_run=True 表示只是預覽、沒有真的送出。
+        """
+        entry = self.data["bugs"][report.fingerprint]
+        record: dict = {"ok": ok, "at": now}
+        if error:
+            record["error"] = error
+        if dry_run:
+            record["dry_run"] = True
+        entry.setdefault("last_submit", {})[submitter_name] = record
+
     def save(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".json.tmp")

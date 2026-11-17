@@ -5,7 +5,11 @@ description = "mk-qa-master plugin: turn failed tests into Jira-ready Markdown b
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["mk-qa-master>=1.5,<2"]
+dependencies = [
+    "mk-qa-master>=1.5,<2",
+    # 送到 Jira 時用來連線。mk-qa-master 本身也相依於它，所以通常已經裝好了。
+    "requests>=2.31",
+]
 
 # 這一段就是「登記表」：告訴 mk-qa-master 測試跑完後要呼叫哪個函式。
 [project.entry-points."mk_qa_master.result_hooks"]

@@ -2,13 +2,14 @@
 
 mk-qa-master 的插件：測試跑完後，把每個失敗的測試整理成一份 Markdown bug report，存到 `bug-reports/` 資料夾。**相同的錯誤只會有一份報告**，不會重複開。
 
-這份文件寫給程式初學者，分成五部分：
+這份文件寫給程式初學者，分成六部分：
 
 1. [怎麼安裝和使用](#1-安裝和使用)
 2. [它是怎麼運作的](#2-它是怎麼運作的)
 3. [每個檔案在做什麼](#3-每個檔案在做什麼)
 4. [我想改報告的長相，要改哪裡？](#4-我想改報告的長相要改哪裡)
-5. [以後要加 Jira，要改哪裡？](#5-以後要加-jira要改哪裡)
+5. [送到 Jira（選用）](#5-送到-jira選用)
+6. [想再接別的系統，要改哪裡？](#6-想再接別的系統要改哪裡)
 
 ---
 
@@ -51,7 +52,7 @@ pip install -e plugins/mk-qa-bug-reporter
 |---|---|---|
 | `QA_BUG_REPORT_SEVERITY` | `Medium` | 每份報告的預設嚴重度 |
 | `QA_BUG_REPORT_DIR` | `<受測專案>/bug-reports` | 報告存放的資料夾 |
-| `QA_BUG_REPORT_SUBMITTERS` | `file` | 送出管道，用逗號分隔。目前只有 `file` |
+| `QA_BUG_REPORT_SUBMITTERS` | `file` | 送出管道，用逗號分隔。可用 `file`（存成檔案）與 `jira`（見[第 5 節](#5-送到-jira選用)） |
 | `QA_BUG_REPORT_ENABLED` | `1` | 設成 `0` 可暫時關閉這個插件 |
 
 把它們加在 MCP 設定的 `env` 區塊裡，和 `QA_RUNNER`、`QA_PROJECT_ROOT` 放一起。
@@ -178,7 +179,10 @@ plugins/mk-qa-bug-reporter/
 │   ├── devices.py              ② 從測試名稱辨識裝置
 │   ├── store.py                ② 歷史紀錄（.index.json）
 │   ├── render.py               ③ 產生 Markdown  ← 改長相看這裡
-│   ├── submitters.py           ④ 送出報告       ← 加 Jira 看這裡
+│   ├── submitters.py           ④ 送出管道的登記表 + 存成檔案
+│   ├── base.py                 ④ 送出管道的共同介面
+│   ├── jira.py                 ④ 送到 Jira
+│   ├── adf.py                  ④ 把 Markdown 轉成 Jira 的格式
 │   ├── models.py               資料結構
 │   └── settings.py             讀環境變數
 ├── tests/                      插件的單元測試
@@ -194,7 +198,10 @@ plugins/mk-qa-bug-reporter/
 | `devices.py` | **步驟 ② 的小幫手。** 把 `test_x[iPhone 15-chromium]` 拆成「裝置 iPhone 15」和「測試 `test_x[chromium]`」。哪些字算裝置，看檔案裡的 `DEVICE_PREFIXES`。 |
 | `store.py` | **步驟 ② 的記憶。** 讀寫 `.index.json`，負責「這個 bug 以前出現過嗎？第幾次了？」。 |
 | `render.py` | **步驟 ③。** 把一份 bug 的資料變成 Markdown 文字。報告的標題、段落、文字都在這裡決定。 |
-| `submitters.py` | **步驟 ④。** `Submitter` 是「送出管道」的共同介面，`FileSubmitter` 是今天唯一的實作（存成檔案）。 |
+| `submitters.py` | **步驟 ④。** 最下面的 `SUBMITTERS` 是送出管道的登記表（`file`、`jira`）。`FileSubmitter`（存成檔案）也寫在這裡。 |
+| `base.py` | **步驟 ④。** `Submitter`：所有送出管道都要遵守的共同介面，只規定一件事——要有一個 `submit(report, markdown)`。 |
+| `jira.py` | **步驟 ④。** `JiraSubmitter`：第一次出現就建立 Jira issue，再次出現就在原本的 issue 留言。讀 Jira 相關的環境變數、負責把 API token 從所有輸出中遮掉。 |
+| `adf.py` | **步驟 ④ 的小幫手。** Jira 不直接接受 Markdown，這個檔案把報告轉成 Jira 要的格式（ADF）。 |
 | `models.py` | 定義三種資料：`Failure`（一個失敗的測試）、`BugReport`（一份報告）、`SubmitResult`（送出的結果）。其他檔案都用這些型別傳資料。 |
 | `settings.py` | 讀上面那四個環境變數，整理成一個 `Settings` 物件。 |
 
@@ -249,31 +256,246 @@ plugins/mk-qa-bug-reporter/
 
 ---
 
-## 5. 以後要加 Jira，要改哪裡？
+## 5. 送到 Jira（選用）
 
-今天**沒有**實作 Jira，但介面已經留好。只需要動 `submitters.py`：
+預設情況下，報告只會存成檔案。開啟這個功能後，插件會另外把報告送到 **Jira Cloud**：
 
-1. 新增一個類別，繼承 `Submitter`，實作 `submit(report, markdown)`：
+- 某個 bug **第一次**出現 → 自動開一張 issue。
+- 同一個 bug **再次**出現 → 在原本那張 issue 加一則留言（寫明第幾次、哪些測試、哪些裝置），**不會重複開單**。
+- Jira 連不上或回傳錯誤 → 測試照常完成、檔案報告照常產生，並記下哪一份沒送成功，下次會自動補送。
 
-   ```python
-   class JiraSubmitter(Submitter):
-       name = "jira"
+> **請先知道：這個功能沒有對真正的 Jira 測試過。** 開發時沒有 Jira 帳號，所有測試都是用「假的 Jira」完成的（細節見[驗證到什麼程度](#驗證到什麼程度)）。第一次使用請務必照下面的順序，先用 dry-run 試。
 
-       def submit(self, report: BugReport, markdown: str) -> SubmitResult:
-           existing = report.refs.get("jira")       # 這個 bug 之前開過的單號
-           if existing:
-               ...  # 在既有的單上留言或更新
-               return SubmitResult(ok=True, ref=existing)
-           ...      # 開新單：Summary 用 report.title，Description 用 markdown
-           return SubmitResult(ok=True, ref="QA-123")
-   ```
+整個流程分四步，請依序做：
 
-2. 在檔案最下面的 `SUBMITTERS` 字典登記：`"jira": JiraSubmitter`
+1. [在 Jira 取得 API token](#步驟一在-jira-取得-api-token)
+2. [在 PowerShell 設定環境變數](#步驟二在-powershell-設定環境變數)
+3. [先用 dry-run 試](#步驟三先用-dry-run-試)
+4. [正式啟用](#步驟四正式啟用)
 
-3. 設環境變數 `QA_BUG_REPORT_SUBMITTERS=file,jira`
+### 步驟一：在 Jira 取得 API token
 
-`submit()` 回傳的 `ref`（例如單號 `QA-123`）會被存進 `.index.json`。下次同一個 bug 再出現，就能從 `report.refs["jira"]` 取回，用來「更新同一張單」而不是「重開一張」。收集、合併、產生 Markdown 這三步完全不用改。
+API token 是一串很長的文字，作用等於「讓程式代替你登入 Jira 的密碼」。它**不是**你平常登入用的密碼。
 
-Jira 的網址和金鑰請從環境變數讀（可覆寫 `from_settings()`），不要寫在程式裡。
+1. 用瀏覽器登入你的 Atlassian 帳號，打開：<https://id.atlassian.com/manage-profile/security/api-tokens>
+2. 按 **Create API token**（建立 API 權杖）。
+   - 如果畫面上有兩個按鈕，請選**沒有** “with scopes” 字樣的那一個。有 scopes 的那種 token 要用不同的網址連線，這個插件不支援。
+3. 取一個看得懂的名字（例如 `mk-qa-bug-reporter`），選一個到期日，按建立。
+4. 畫面會顯示 token，**只會顯示這一次**。先不要關掉這個頁面，下一步馬上會用到。
 
-> **關於格式：** 報告是標準 Markdown，貼進 Jira Cloud 的新版編輯器會自動轉換。若之後改用 API 送出，Jira 的 API 不直接吃 Markdown（Cloud 用 ADF、Server 用 wiki 語法），屆時需要在 `JiraSubmitter` 裡做轉換，或在 `render.py` 加一個對應的輸出格式。
+另外準備三項資料：
+
+| 資料 | 去哪裡找 | 範例 |
+|---|---|---|
+| Jira 網址 | 你平常開 Jira 時瀏覽器網址列的最前面 | `https://your-team.atlassian.net` |
+| 帳號 email | 你登入 Jira 用的 email | `you@example.com` |
+| 專案代碼 | issue 編號前面的英文字。例如 issue 是 `QA-123`，代碼就是 `QA` | `QA` |
+
+Atlassian 的網頁會改版，按鈕的文字和位置可能和這裡寫的略有不同。
+
+#### token 的安全守則
+
+- **不要**把 token 貼給 AI、貼在聊天室、寫在 email 或文件裡。
+- **不要**把 token 寫進任何會放進 Git 的檔案。
+- 懷疑外洩時，回到上面那個網頁按 **Revoke**（撤銷），再建一個新的。撤銷後舊的立刻失效。
+- token 的權限等同於你的帳號：你能看、能改的 Jira 內容，拿到 token 的人也能。
+
+### 步驟二：在 PowerShell 設定環境變數
+
+「環境變數」是放在電腦裡、讓程式讀取的設定值。這個插件只從環境變數讀 Jira 的設定，不會把它們寫進任何檔案。
+
+打開 **PowerShell**（開始功能表搜尋 PowerShell），把下面四行**一行一行**貼上執行。前三行請把引號裡的內容換成你自己的：
+
+```powershell
+$env:QA_BUG_REPORT_JIRA_URL = "https://your-team.atlassian.net"
+$env:QA_BUG_REPORT_JIRA_EMAIL = "you@example.com"
+$env:QA_BUG_REPORT_JIRA_PROJECT = "QA"
+$env:QA_BUG_REPORT_SUBMITTERS = "file,jira"
+```
+
+最後一行的意思是「存成檔案，**並且**送到 Jira」。請保留 `file`，這樣 Jira 出問題時你手上仍有檔案報告。
+
+接著設定 token。**不要**用上面那種寫法把 token 直接打在指令裡，因為 PowerShell 會把你打過的指令存進歷史紀錄檔。請改用下面兩行：
+
+```powershell
+$secure = Read-Host "請貼上 API token 後按 Enter" -AsSecureString
+$env:QA_BUG_REPORT_JIRA_API_TOKEN = [System.Net.NetworkCredential]::new("", $secure).Password
+```
+
+執行第一行後，畫面會等你輸入。把 token 貼上（畫面只會顯示星號或什麼都不顯示，這是正常的），按 Enter，再執行第二行。這樣 token 不會出現在畫面上，也不會進入指令歷史。
+
+確認有設定成功（只顯示長度，不顯示內容）：
+
+```powershell
+$env:QA_BUG_REPORT_JIRA_API_TOKEN.Length
+```
+
+顯示一個大於 0 的數字就對了。
+
+#### 這樣設定的效果與限制
+
+- 這些設定**只存在於這一個 PowerShell 視窗**。關掉視窗就消失，下次要重新設定。這是最安全的方式。
+- 只有**從這個視窗啟動**的程式讀得到。所以接下來的指令都要在同一個視窗裡執行。
+- **透過 AI 客戶端使用時要注意：** 很多 AI 客戶端啟動 mk-qa-master 時，只會傳入它自己設定檔 `env` 區塊裡寫的變數，不會傳入你在 PowerShell 設的變數。各家做法不同，這一點沒有逐一驗證過。
+  - 如果你的客戶端支援在設定檔裡「引用」環境變數（有些寫成 `${變數名稱}`），請用引用的方式，不要寫入實際的值。
+  - 如果只能把值直接寫進客戶端的設定檔，那個檔案就會含有 token。這是客戶端的限制，不是這個插件寫進去的；請確認該檔案不在任何 Git 專案裡、不會被分享或備份到公開的地方。
+  - 下面的步驟使用插件附的示範腳本，它會把這個視窗的環境變數完整傳給 mk-qa-master，所以不受這個問題影響。
+
+#### 其他可調整的設定
+
+| 環境變數 | 預設 | 說明 |
+|---|---|---|
+| `QA_BUG_REPORT_JIRA_ISSUE_TYPE` | `Bug` | 要建立的 issue 類型。名稱要和你們 Jira 專案裡的一模一樣；中文介面的 Jira 可能叫「錯誤」或其他名稱 |
+| `QA_BUG_REPORT_JIRA_LABELS` | `mk-qa-bug-reporter` | 要加的標籤，逗號分隔。另外會自動加一個 `bug-<指紋>`。設成 `none` 則完全不加標籤 |
+| `QA_BUG_REPORT_JIRA_DRY_RUN` | 未設定 | 設成 `1` 就只預覽、不送出（見步驟三） |
+| `QA_BUG_REPORT_JIRA_TIMEOUT` | `15` | 等 Jira 回應最多幾秒 |
+
+### 步驟三：先用 dry-run 試
+
+dry-run 的意思是「排練」：插件把要送給 Jira 的內容全部準備好，但**不連線、不送出**，只讓你看。Jira 上不會出現任何東西。
+
+在同一個 PowerShell 視窗，先開啟 dry-run：
+
+```powershell
+$env:QA_BUG_REPORT_JIRA_DRY_RUN = "1"
+```
+
+然後跑一次會失敗的範例（在 mk-qa-master 的資料夾裡執行）：
+
+```powershell
+python plugins/mk-qa-bug-reporter/examples/demo_via_mcp.py examples/mobile-h5 --isolate-stdin
+```
+
+看兩個地方：
+
+**一、畫面上的輸出。** 找到 `"jira"` 那一段，應該長這樣：
+
+```json
+"jira": {
+  "ok": true,
+  "ref": "",
+  "detail": "dry-run：將在專案 QA 建立一張 Bug（沒有真的送出）",
+  "dry_run": true,
+  "action": "create_issue",
+  "url": "https://your-team.atlassian.net/rest/api/3/issue",
+  "auth": "帳號 yo***@example.com + API token（已隱藏）",
+  "summary": "[test_no_horizontal_scroll[chromium]] AssertionError: ...（2 個裝置）",
+  "labels": ["mk-qa-bug-reporter", "bug-3b0a6fd8"],
+  "preview_file": "...\\bug-reports\\jira-dry-run\\BUG-3b0a6fd8.json"
+}
+```
+
+請檢查：
+
+- `url` 開頭是不是你的 Jira 網址。
+- `detail` 裡的專案代碼和 issue 類型對不對。
+- `auth` 顯示的帳號是不是你的（中間會被遮住）。token 永遠只會顯示「已隱藏」。
+- 如果多了一項 `"problems"`，代表有設定漏掉了，裡面會寫是哪一個環境變數。dry-run 在設定不完整時也能執行，方便你先看結果。
+
+**二、預覽檔。** 打開 `preview_file` 指到的那個檔案（在受測專案的 `bug-reports/jira-dry-run/` 裡）。裡面是將要送給 Jira 的完整內容，可以確認標題和內文是不是你要的。這個檔案不含 token。
+
+dry-run 不會把 bug 記成「已經開過單」，所以排練幾次都沒關係，不影響之後正式開單。
+
+### 步驟四：正式啟用
+
+dry-run 的結果都正確之後，在同一個 PowerShell 視窗關掉 dry-run：
+
+```powershell
+Remove-Item Env:QA_BUG_REPORT_JIRA_DRY_RUN
+```
+
+再跑一次同樣的指令：
+
+```powershell
+python plugins/mk-qa-bug-reporter/examples/demo_via_mcp.py examples/mobile-h5 --isolate-stdin
+```
+
+成功的話，`"jira"` 那一段會變成：
+
+```json
+"jira": {
+  "ok": true,
+  "ref": "QA-123",
+  "detail": "已建立 QA-123",
+  "action": "created",
+  "url": "https://your-team.atlassian.net/browse/QA-123"
+}
+```
+
+打開 `url` 就能看到那張 issue。**建議第一次先用測試用的 Jira 專案**，確認內容沒問題再換成正式的專案。
+
+再跑一次（同一個 bug 再次出現），會看到 `"action": "commented"`，`ref` 仍是同一個編號，Jira 上是多一則留言而不是多一張單。
+
+要停用 Jira、只留檔案報告：
+
+```powershell
+$env:QA_BUG_REPORT_SUBMITTERS = "file"
+```
+
+### 沒送成功時怎麼看
+
+Jira 出問題不會讓測試失敗，但會在三個地方留下紀錄：
+
+1. **該筆報告的 `"jira"` 區塊**：`"ok": false`，加上 `"error"` 說明原因。
+2. **輸出最外層的 `"submit_failures"`**：列出所有沒送成功的 Bug ID，一眼就能看到。
+3. **`bug-reports/.index.json`**：每個 bug 的 `last_submit` 記著各管道最近一次的結果與時間。
+
+沒送成功的 bug 不會被記成「已開單」，所以下次同一個 bug 再出現時，插件會自動再試一次開單。
+
+常見的錯誤訊息：
+
+| 訊息 | 可能原因 | 怎麼處理 |
+|---|---|---|
+| `Jira 設定不完整：尚未設定 QA_BUG_REPORT_JIRA_…` | 少設了某個環境變數，或換了新的 PowerShell 視窗 | 回到步驟二重新設定 |
+| `必須以 https:// 開頭` | 網址寫成 `http://` 或漏了開頭 | 改成 `https://` 開頭 |
+| `HTTP 401` | email 或 token 不對、token 過期或已撤銷 | 重新建立 token，再做一次步驟二 |
+| `HTTP 403` | 這個帳號沒有在該專案開單或留言的權限 | 請 Jira 管理員開權限 |
+| `HTTP 404` | 網址或專案代碼打錯 | 檢查步驟一的三項資料 |
+| `HTTP 400 … issuetype` | 專案裡沒有叫 `Bug` 的類型 | 設定 `QA_BUG_REPORT_JIRA_ISSUE_TYPE` 為正確名稱 |
+| `HTTP 400 … labels` | 專案的建立畫面沒有「標籤」欄位 | 設定 `QA_BUG_REPORT_JIRA_LABELS` 為 `none` |
+| `HTTP 400 …（其他欄位名稱）` | 專案規定了其他必填欄位 | 目前不支援，見下方限制 |
+| `連不上 Jira（…）` | 沒有網路、網址打錯、公司防火牆或 proxy 擋住 | 先用瀏覽器確認能開啟 Jira |
+
+### 目前的限制
+
+- **只支援 Jira Cloud**（網址是 `*.atlassian.net` 的那種）。公司自架的 Jira Server / Data Center 用的是另一套登入方式與格式，沒有支援。
+- **不會上傳截圖、trace、影片。** issue 裡只有它們在你電腦上的路徑，需要的話請手動附加。
+- **嚴重度不會對應到 Jira 的 Priority 欄位。** 嚴重度只寫在內文裡，因為每個 Jira 專案的優先級名稱不同，自動填容易失敗。
+- **專案有其他必填欄位時無法開單。** 目前只會填專案、類型、標題、內文、標籤。
+- **摘要表在 Jira 上會變成條列**，不是表格。其餘的標題、清單、程式碼區塊會保留樣式。
+- **再次出現時的判斷只看本機的 `.index.json`。** 如果刪掉這個檔案或換一台電腦跑，插件不知道以前開過單，會重新開一張。若原本的 issue 在 Jira 上被刪除，插件會改開一張新的。
+- **bug 修好後不會自動關閉 issue。**
+
+### 驗證到什麼程度
+
+開發這個功能時沒有 Jira 帳號，**沒有任何一行程式實際連過真正的 Jira**。
+
+已經用自動化測試確認的（都在 `tests/test_bugreporter_jira.py`）：
+
+- 用「假的 Jira」（程式裡模擬的回應）確認：第一次出現會開單、再次出現會留言而不重開、原 issue 不存在時改開新單、各種錯誤（401、403、400、502、連線失敗、逾時）都不會讓流程中斷、檔案報告照常產生、失敗有被記錄、dry-run 完全不連線。
+- 用一個只在本機運作的假伺服器，確認程式實際送出的連線格式：網址路徑、登入標頭、內容是 JSON。
+- 在各種情況下（包含故意讓錯誤訊息夾帶 token），確認 token 不會出現在回傳結果、錯誤訊息、`.index.json`、報告檔、dry-run 預覽檔裡。
+- dry-run 模式透過 MCP 實際跑過一次（`examples/mobile-h5`），有產生預覽檔。
+
+**沒有**確認的：
+
+- 真正的 Jira 是否接受這個插件送出的內容格式。內容格式（ADF）是依 Atlassian 的公開規格寫的，但沒有被真的 Jira 驗收過。這是最可能在第一次實際使用時出問題的地方。
+- 真正的 Jira 回傳的錯誤訊息，是否和測試裡假設的格式相同。
+- 步驟一的網頁操作與按鈕名稱。
+- 各家 AI 客戶端如何把環境變數傳給 mk-qa-master。
+
+所以第一次正式啟用時，請用測試專案，並實際打開建立出來的 issue 檢查內容。
+
+---
+
+## 6. 想再接別的系統，要改哪裡？
+
+Jira 是透過預留的「送出管道」介面加上去的，沒有動到收集、合併、產生 Markdown 這三步。要再接別的系統（例如 Slack、GitHub Issues），做法相同：
+
+1. 新增一個檔案，寫一個繼承 `Submitter`（定義在 `base.py`）的類別，實作 `submit(report, markdown)`。可以參考 `jira.py`。
+2. 在 `submitters.py` 最下面的 `SUBMITTERS` 字典登記一個名稱。
+3. 在環境變數 `QA_BUG_REPORT_SUBMITTERS` 加上那個名稱。
+
+`submit()` 回傳的 `ref`（例如單號）會被存進 `.index.json`。下次同一個 bug 再出現，就能從 `report.refs["你的名稱"]` 取回，用來「更新同一筆」而不是「重開一筆」。
+
+金鑰一律從環境變數讀，不要寫在程式裡，也不要放進回傳的 `detail` 或 `info`。

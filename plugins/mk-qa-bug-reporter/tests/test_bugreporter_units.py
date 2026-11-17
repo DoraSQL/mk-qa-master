@@ -252,7 +252,7 @@ def test_submitter_interface_can_be_extended(tmp_path, monkeypatch, rendered):
 
 
 def test_unknown_submitter_is_rejected(tmp_path, monkeypatch):
-    monkeypatch.setenv("QA_BUG_REPORT_SUBMITTERS", "jira")
+    monkeypatch.setenv("QA_BUG_REPORT_SUBMITTERS", "slack")
     with pytest.raises(ValueError, match="未知的送出管道"):
         make_submitters(Settings.from_env(tmp_path))
 

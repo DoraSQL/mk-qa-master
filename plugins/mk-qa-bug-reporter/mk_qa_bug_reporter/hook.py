@@ -30,7 +30,7 @@ from .grouping import group_failures
 from .render import render_markdown, render_title
 from .settings import Settings
 from .store import IndexStore
-from .submitters import make_submitters
+from .submitters import build_submitters
 
 
 def _mk_qa_master_version() -> str:
@@ -85,10 +85,18 @@ def process(event: dict, runner: Any = None, now: str | None = None) -> dict:
             store.save()
         return {"reports": 0, "note": "沒有失敗的測試"}
 
-    submitters = make_submitters(settings)
+    # 某個管道設定有誤（例如 Jira 少了環境變數）時，其他管道照常運作。
+    submitters, unavailable = build_submitters(settings)
     reports = group_failures(failures, settings.severity, build_environment(event, now))
 
     rows: list[dict] = []
+    submit_failures: list[dict] = []
+
+    def record_failure(report, row: dict, name: str, error: str) -> None:
+        row["submitted"][name] = {"ok": False, "error": error}
+        store.record_submit(report, name, False, now, error)
+        submit_failures.append({"bug_id": report.bug_id, "submitter": name, "error": error})
+
     for report in reports:
         store.merge(report, now)
         report.title = render_title(report)
@@ -107,19 +115,26 @@ def process(event: dict, runner: Any = None, now: str | None = None) -> dict:
             try:
                 result = submitter.submit(report, markdown)
             except Exception as e:  # noqa: BLE001
-                row["submitted"][submitter.name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                record_failure(report, row, submitter.name, f"{type(e).__name__}: {e}")
                 continue
-            if result.ok:
-                store.set_ref(report, submitter.name, result.ref)
-                row["submitted"][submitter.name] = {"ok": True, "ref": result.ref}
-            else:
-                row["submitted"][submitter.name] = {"ok": False, "error": result.detail}
+            if not result.ok:
+                record_failure(report, row, submitter.name, result.detail or "送出失敗（未提供原因）")
+                continue
+            store.set_ref(report, submitter.name, result.ref)
+            store.record_submit(report, submitter.name, True, now, dry_run=bool(result.info.get("dry_run")))
+            entry = {"ok": True, "ref": result.ref}
+            if result.detail:
+                entry["detail"] = result.detail
+            entry.update(result.info)
+            row["submitted"][submitter.name] = entry
+        for name, error in unavailable.items():
+            record_failure(report, row, name, error)
         rows.append(row)
 
     store.last_report_mtime = mtime
     store.save()
 
-    return {
+    summary = {
         "reports": len(rows),
         "new": sum(1 for r in rows if r["status"] == "new"),
         "updated": sum(1 for r in rows if r["status"] == "updated"),
@@ -127,6 +142,10 @@ def process(event: dict, runner: Any = None, now: str | None = None) -> dict:
         "output_dir": str(settings.output_dir),
         "items": rows,
     }
+    if submit_failures:
+        # 放在最外層，讓 AI 和使用者一眼看到「哪一份沒送成功」。
+        summary["submit_failures"] = submit_failures
+    return summary
 
 
 def on_result(event: dict) -> dict | None:
