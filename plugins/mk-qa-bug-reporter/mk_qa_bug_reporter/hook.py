@@ -99,6 +99,7 @@ def process(event: dict, runner: Any = None, now: str | None = None) -> dict:
             "status": "new" if report.is_new else "updated",
             "occurrences": report.occurrences,
             "tests": len(report.failures),
+            "devices": report.devices,
             "submitted": {},
         }
         for submitter in submitters:

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .grouping import strip_ansi
+from .grouping import error_lines, strip_ansi
 from .models import BugReport, Failure
 
 # ---- 可調整的文字 -----------------------------------------------------------
@@ -27,6 +27,7 @@ LABELS = {
     "severity": "嚴重度",
     "occurrences": "出現次數",
     "affected_count": "受影響測試數",
+    "devices": "受影響裝置",
     # 段落標題
     "environment": "環境",
     "steps": "重現步驟",
@@ -56,6 +57,7 @@ SECTION_ORDER = [
 
 ENVIRONMENT_LABELS = {
     "runner": "Runner",
+    "devices": "裝置",          # 由測試名稱辨識；沒有裝置時這一行不會出現
     "tool": "觸發工具",
     "os": "作業系統",
     "python": "Python",
@@ -67,6 +69,9 @@ ENVIRONMENT_LABELS = {
 MAX_TITLE_CHARS = 120       # 標題最長幾個字
 MAX_ERROR_CHARS = 6000      # 錯誤訊息最多保留幾個字（保留尾段，因為結論通常在最後）
 MAX_STEPS = 30              # 重現步驟最多列幾個操作
+MAX_OTHER_COMMANDS = 5      # 重現步驟最多列幾個「其他裝置」的指令
+MAX_OTHER_ERROR_LINES = 8   # 「其他失敗的錯誤內容」每個最多列幾行
+DEVICE_SEPARATOR = "、"     # 多個裝置之間用什麼符號隔開
 
 # 這些 runner 的測試可以直接用 pytest 指令重跑。
 _PYTEST_RUNNERS = ("pytest", "pytest-playwright", "playwright", "edge", "rtsp")
@@ -74,14 +79,29 @@ _PYTEST_RUNNERS = ("pytest", "pytest-playwright", "playwright", "edge", "rtsp")
 
 # ---- 標題 -------------------------------------------------------------------
 
+def _is_cross_device(report: BugReport) -> bool:
+    """這份報告是不是「跨多個裝置」的。"""
+    return len(report.devices) > 1
+
+
+def _display_name(report: BugReport) -> str:
+    """報告裡用來稱呼測試的名稱。跨裝置時拿掉裝置，避免看起來只有第一支手機壞掉。"""
+    first = report.failures[0]
+    return first.base_short_name if _is_cross_device(report) else first.short_name
+
+
 def render_title(report: BugReport) -> str:
     """報告標題，例如：[test_login] TimeoutError: ...（共 2 個測試）"""
-    first = report.failures[0]
-    title = f"[{first.short_name}] {report.summary}"
+    title = f"[{_display_name(report)}] {report.summary}"
     if len(title) > MAX_TITLE_CHARS:
         title = title[: MAX_TITLE_CHARS - 1] + "…"
-    if len(report.failures) > 1:
-        title += f"（共 {len(report.failures)} 個測試）"
+    notes = []
+    if len(report.base_tests) > 1:
+        notes.append(f"共 {len(report.base_tests)} 個測試")
+    if _is_cross_device(report):
+        notes.append(f"{len(report.devices)} 個裝置")
+    if notes:
+        title += f"（{'、'.join(notes)}）"
     return title
 
 
@@ -102,6 +122,8 @@ def _section_summary(report: BugReport) -> str:
         (LABELS["occurrences"], occurrences),
         (LABELS["affected_count"], len(report.failures)),
     ]
+    if report.devices:
+        rows.append((LABELS["devices"], DEVICE_SEPARATOR.join(report.devices)))
     lines = [f"| {LABELS['field']} | {LABELS['value']} |", "|---|---|"]
     lines += [f"| {_cell(k)} | {_cell(v)} |" for k, v in rows]
     return "\n".join(lines)
@@ -109,17 +131,26 @@ def _section_summary(report: BugReport) -> str:
 
 def _section_environment(report: BugReport) -> str:
     lines = [f"## {LABELS['environment']}", ""]
+    values = dict(report.environment)
+    values["devices"] = DEVICE_SEPARATOR.join(report.devices)
     for key, label in ENVIRONMENT_LABELS.items():
-        value = report.environment.get(key)
+        value = values.get(key)
         if value:
             lines.append(f"- {label}：{value}")
     return "\n".join(lines)
 
 
+def _rerun_command(report: BugReport, failure: Failure) -> str:
+    """重跑單一測試的指令；不是 pytest 系的 runner 就只給測試名稱。"""
+    if report.environment.get("runner", "") in _PYTEST_RUNNERS:
+        return f'`pytest "{failure.nodeid}"`'
+    return f"`{failure.nodeid}`"
+
+
 def _rerun_instruction(report: BugReport, failure: Failure) -> str:
     runner = report.environment.get("runner", "")
     if runner in _PYTEST_RUNNERS:
-        return f'執行失敗的測試：`pytest "{failure.nodeid}"`'
+        return f"執行失敗的測試：{_rerun_command(report, failure)}"
     return f"以 `{runner or '目前的 runner'}` 執行測試 `{failure.nodeid}`（可透過 mk-qa-master 的 `run_tests`）"
 
 
@@ -129,6 +160,11 @@ def _section_steps(report: BugReport) -> str:
     project_root = report.environment.get("project_root")
     lines.append(f"1. 進入專案目錄：`{project_root}`" if project_root else "1. 進入受測專案目錄")
     lines.append(f"2. {_rerun_instruction(report, first)}")
+    if _is_cross_device(report):
+        # 同一個測試在其他裝置上的重跑指令
+        others = [f for f in report.failures[1:] if f.base_nodeid == first.base_nodeid and f.device]
+        for other in others[:MAX_OTHER_COMMANDS]:
+            lines.append(f"   - {other.device}：{_rerun_command(report, other)}")
     if first.steps:
         lines.append("3. 測試會依序執行以下操作，並在最後一步或其後的檢查失敗：")
         for step in first.steps[:MAX_STEPS]:
@@ -147,16 +183,27 @@ def _section_steps(report: BugReport) -> str:
 
 def _section_expected(report: BugReport) -> str:
     first = report.failures[0]
+    name = _display_name(report)
+    where = f"在 {DEVICE_SEPARATOR.join(report.devices)} 上都" if _is_cross_device(report) else ""
     if first.title:
-        body = f"{first.title}（測試 `{first.short_name}` 應通過）"
+        body = f"{first.title}（測試 `{name}` {where}應通過）"
     else:
-        body = f"測試 `{first.short_name}` 應通過，不應出現下方的錯誤。"
+        body = f"測試 `{name}` {where}應通過，不應出現下方的錯誤。"
     return f"## {LABELS['expected']}\n\n{body}"
 
 
 def _section_actual(report: BugReport) -> str:
     count = len(report.failures)
-    scope = "測試失敗" if count == 1 else f"{count} 個測試以相同的錯誤失敗"
+    devices = report.devices
+    device_list = DEVICE_SEPARATOR.join(devices)
+    if count == 1:
+        scope = "測試失敗"
+    elif len(report.base_tests) == 1 and len(devices) > 1:
+        scope = f"同一個測試在 {len(devices)} 個裝置上（{device_list}）以同一種錯誤失敗"
+    elif len(devices) > 1:
+        scope = f"{count} 個測試案例在 {len(devices)} 個裝置上（{device_list}）以同一種錯誤失敗"
+    else:
+        scope = f"{count} 個測試以相同的錯誤失敗"
     return f"## {LABELS['actual']}\n\n{scope}：{report.summary}"
 
 
@@ -174,7 +221,22 @@ def _section_error(report: BugReport) -> str:
     header = f"## {LABELS['error']}\n\n"
     if source:
         header += f"{source}\n\n"
-    return f"{header}```text\n{message}\n```{note}"
+    return f"{header}```text\n{message}\n```{note}{_other_error_lines(report)}"
+
+
+def _other_error_lines(report: BugReport) -> str:
+    """其他失敗的錯誤內容若和第一個不完全相同（例如各裝置量到的數字不同），列出差異。"""
+    first_lines = error_lines(report.failures[0].message)
+    blocks: list[str] = []
+    for other in report.failures[1:]:
+        lines = error_lines(other.message)
+        if not lines or lines == first_lines:
+            continue
+        text = "\n".join(lines[:MAX_OTHER_ERROR_LINES]).replace("```", "'''")
+        blocks.append(f"`{other.nodeid}`：\n\n```text\n{text}\n```")
+    if not blocks:
+        return ""
+    return "\n\n其他失敗的錯誤內容略有不同（只列出錯誤本身）：\n\n" + "\n\n".join(blocks)
 
 
 def _section_attachments(report: BugReport) -> str:

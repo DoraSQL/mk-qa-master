@@ -137,10 +137,26 @@ flowchart LR
 
 指紋也是檔名的一部分（`BUG-<指紋>.md`），所以同一個 bug 永遠寫到同一個檔案。
 
+### 用手機模擬跑測試時（多個裝置）
+
+如果測試名稱後面帶有裝置（例如 `test_x[iPhone 15-chromium]`，做法見 [`examples/mobile-h5/`](../../examples/mobile-h5/)），插件會多做兩件事：
+
+- **報告會標出裝置。**「環境」段落多一行「裝置」，最上面的摘要表多一列「受影響裝置」。測試沒有帶裝置時，這兩處都不會出現。
+- **同一個測試在不同裝置上以同一種錯誤失敗，只開一份報告。** 不同手機量到的數字通常不一樣（例如 `assert 800 <= 393` 與 `assert 801 <= 412`），所以比對這種情況時會額外忽略數字和裝置名稱。報告裡會列出所有受影響的裝置、各自的重跑指令，以及各裝置不同的那幾行錯誤。
+
+「忽略數字」只用在**同一個測試**跨裝置的比對。不同的測試即使錯誤只差在數字，仍然分開，避免把不相干的問題併在一起。
+
+哪些名稱算裝置，由 `devices.py` 的 `DEVICE_PREFIXES` 決定（iPhone、iPad、Pixel、Galaxy、Desktop 等 Playwright 內建裝置的開頭）。用了自訂的裝置名稱，把開頭加進去即可。
+
+範例輸出：[`examples/sample_output/BUG-3b0a6fd8.md`](examples/sample_output/BUG-3b0a6fd8.md)。
+
+### 歷史紀錄
+
 `bug-reports/.index.json` 記錄每個指紋的歷史：第一次出現的時間、出現過幾次、影響過哪些測試。下次同一個錯誤再出現時，報告會被**更新**（出現次數 +1），而不是另開一份。
 
 ### 已知限制
 
+- **帶裝置的測試，錯誤訊息含數字時不會跨測試合併。** 例如兩個不同的測試在手機上都出現 `Timeout 1000ms exceeded`，會各開一份（每份各自涵蓋所有裝置）。這是為了不因為「忽略數字」而誤併不同的問題所做的取捨；沒有帶裝置的測試不受影響，仍然會合併。
 - **兩個不同的 bug 若錯誤訊息一樣，會被併成一份。** 例如兩個不同的頁面都逾時、訊息文字剛好相同。所以每份報告都會列出所有受影響的測試，方便人工判斷要不要拆開。
 - **附件有多完整，看 runner。** pytest + Playwright 會有截圖、trace、影片路徑；jest 只提供錯誤訊息，報告裡附件會顯示「無」。
 - **「預期結果」來自測試的 docstring。** 測試沒寫 docstring 時，只能寫出「測試應通過」這種通用句。
@@ -159,6 +175,7 @@ plugins/mk-qa-bug-reporter/
 │   ├── hook.py                 入口，把四個步驟串起來
 │   ├── collector.py            ① 收集失敗的測試
 │   ├── grouping.py             ② 算指紋、合併相同錯誤
+│   ├── devices.py              ② 從測試名稱辨識裝置
 │   ├── store.py                ② 歷史紀錄（.index.json）
 │   ├── render.py               ③ 產生 Markdown  ← 改長相看這裡
 │   ├── submitters.py           ④ 送出報告       ← 加 Jira 看這裡
@@ -174,6 +191,7 @@ plugins/mk-qa-bug-reporter/
 | `hook.py` | **入口。** `on_result(event)` 被 mk-qa-master 呼叫，真正的流程在 `process()`：讀設定 → 收集 → 合併 → 產生文字 → 送出 → 回報結果。想知道整體流程，先讀這個檔案。 |
 | `collector.py` | **步驟 ①。** 向目前的 runner 要「哪些測試失敗了」。mk-qa-master 給插件的 `event` 裡沒有失敗明細，所以要自己去拿。 |
 | `grouping.py` | **步驟 ②。** `normalize_error()` 把錯誤訊息整理成穩定的文字，`fingerprint_of()` 算指紋，`group_failures()` 把指紋相同的失敗放在一起。`summarize_error()` 產生一行摘要。 |
+| `devices.py` | **步驟 ② 的小幫手。** 把 `test_x[iPhone 15-chromium]` 拆成「裝置 iPhone 15」和「測試 `test_x[chromium]`」。哪些字算裝置，看檔案裡的 `DEVICE_PREFIXES`。 |
 | `store.py` | **步驟 ② 的記憶。** 讀寫 `.index.json`，負責「這個 bug 以前出現過嗎？第幾次了？」。 |
 | `render.py` | **步驟 ③。** 把一份 bug 的資料變成 Markdown 文字。報告的標題、段落、文字都在這裡決定。 |
 | `submitters.py` | **步驟 ④。** `Submitter` 是「送出管道」的共同介面，`FileSubmitter` 是今天唯一的實作（存成檔案）。 |
@@ -207,7 +225,9 @@ plugins/mk-qa-bug-reporter/
 | 改預設嚴重度 | 不用改程式，設環境變數 `QA_BUG_REPORT_SEVERITY` |
 | 在「環境」段落多放一項資料（例如瀏覽器） | 先在 `hook.py` 的 `build_environment()` 加資料，再到 `render.py` 的 `ENVIRONMENT_LABELS` 加對應的名稱 |
 | 改檔名規則 | `grouping.py` 的 `group_failures()`（`bug_id=f"BUG-{fingerprint}"`）與 `submitters.py` 的 `FileSubmitter.submit()` |
-| 讓合併更寬鬆或更嚴格 | `grouping.py` 的 `normalize_error()`。抹掉越多東西，越容易被判成同一個 bug |
+| 讓合併更寬鬆或更嚴格 | `grouping.py` 的 `normalize_error()`。抹掉越多東西，越容易被判成同一個 bug。跨裝置的比對規則在同檔的 `loosen_for_devices()` 與 `fingerprint_of()` |
+| 讓某個自訂名稱被認成裝置 | `devices.py` 的 `DEVICE_PREFIXES` |
+| 改多個裝置之間的分隔符號 | `render.py` 的 `DEVICE_SEPARATOR` |
 
 **改完記得跑測試**（`pytest tests`）。`tests/test_bugreporter_units.py` 會檢查報告裡有沒有特定文字，改了 `LABELS` 之後有些測試會失敗，這是正常的，把測試裡對應的文字一起改掉即可。
 

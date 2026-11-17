@@ -72,10 +72,41 @@ def summarize_error(message: str) -> str:
     return first
 
 
+def loosen_for_devices(signature: str, device: str) -> str:
+    """更寬鬆的簽名：再抹掉「裝置名稱」和「所有數字」。
+
+    同一個問題在不同手機上，量到的數字通常不一樣（例如 `assert 800 <= 393`
+    與 `assert 801 <= 412`），錯誤訊息裡也可能帶著裝置名稱。抹掉之後才比得出
+    它們是同一種錯誤。
+    """
+    loose = signature
+    for variant in (device, device.lower().replace(" ", "-")):   # "iPhone 15" 與 "iphone-15"
+        loose = loose.replace(variant, "<device>")
+    return re.sub(r"\d+(?:\.\d+)?", "N", loose)
+
+
 def fingerprint_of(failure: Failure) -> tuple[str, str]:
-    """回傳 (指紋, 簽名)。沒有錯誤訊息時改用測試名稱，避免把不相干的失敗全併在一起。"""
+    """回傳 (指紋, 簽名)。指紋相同的失敗會被放進同一份報告。
+
+    規則有三條，依序判斷：
+
+    1. 沒有錯誤訊息 → 用測試名稱當指紋，避免把不相干的失敗全併在一起。
+    2. 測試有標示裝置，而且錯誤訊息含有數字或裝置名稱 → 用「去掉裝置的測試名稱
+       ＋寬鬆簽名」當指紋。效果：同一個測試在不同裝置上以同一種錯誤失敗時會合併，
+       但不會因為忽略數字而把「不同的測試」誤併在一起。
+    3. 其他情況 → 用嚴格簽名當指紋。效果：錯誤訊息完全相同的失敗會合併，
+       不論是哪個測試、哪個裝置。
+    """
     signature = normalize_error(failure.message)
-    basis = signature or f"no-message::{failure.nodeid}"
+    if not signature:
+        basis = f"no-message::{failure.base_nodeid if failure.device else failure.nodeid}"
+    else:
+        basis = signature
+        if failure.device:
+            loose = loosen_for_devices(signature, failure.device)
+            if loose != signature:
+                basis = f"cross-device::{failure.base_nodeid}\n{loose}"
+                signature = loose
     digest = hashlib.sha1(basis.encode("utf-8", errors="replace")).hexdigest()[:8]
     return digest, signature
 
