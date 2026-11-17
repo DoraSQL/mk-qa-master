@@ -117,16 +117,22 @@ pytest -k "Pixel"
 python plugins/mk-qa-bug-reporter/examples/demo_via_mcp.py examples/mobile-h5 --isolate-stdin
 ```
 
-跑完後，這個資料夾底下會多出 `bug-reports/`，裡面每個失敗各有一份報告。報告的標題、重現指令、截圖路徑都帶有手機名稱，例如：
+跑完後，這個資料夾底下會多出 `bug-reports/`，裡面有 **1 份**報告。這個範例雖然有 2 個失敗（兩支手機各一個），但它們是同一個測試、同一種錯誤，插件會合併成一份：
 
 ```
-# [test_no_horizontal_scroll[Pixel 7-chromium]] AssertionError: 頁面內容比螢幕寬，手機上會出現左右捲軸
+# [test_no_horizontal_scroll[chromium]] AssertionError: 頁面內容比螢幕寬，手機上會出現左右捲軸（2 個裝置）
 ```
 
-目前有兩點要知道：
+報告裡看得出是哪幾支手機：
 
-- 報告的「環境」段落**沒有**獨立列出手機型號，要從標題或測試名稱看。
-- 同一個問題在兩支手機上會開成**兩份**報告而不是合併成一份，因為兩支手機量到的寬度數字不同（`800 <= 393` 與 `801 <= 412`），插件把它們當成不同的錯誤。
+- 「環境」段落有一行 `裝置：iPhone 15、Pixel 7`，最上面的摘要表也有「受影響裝置」。
+- 「重現步驟」列出每支手機各自的重跑指令。
+- 兩支手機量到的寬度數字不同（`800 <= 393` 與 `801 <= 412`）。插件比對時會忽略這種數字差異，所以仍視為同一個錯誤；報告的「錯誤訊息」段落會把兩支手機各自的數字都列出來。
+- 截圖、trace、影片的路徑是每支手機分開列的。
+
+如果某個測試只在其中一支手機失敗，報告的標題會直接帶那支手機的名稱（例如 `[test_xxx[Pixel 7-chromium]]`），「裝置」那一行也只會有它。
+
+完整的範例輸出見 [`plugins/mk-qa-bug-reporter/examples/sample_output/BUG-3b0a6fd8.md`](../../plugins/mk-qa-bug-reporter/examples/sample_output/BUG-3b0a6fd8.md)。合併規則的說明在[插件的 README](../../plugins/mk-qa-bug-reporter/README.md)。
 
 ---
 

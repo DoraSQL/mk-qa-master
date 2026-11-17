@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 使用者的個人規則（必須遵守）
+
+> 執行任何刪除動作（刪檔案、刪資料夾、刪分支，包含測試產生的暫存檔）之前，必須先問我並得到同意。
+
+This applies to every deletion, with no exceptions for things that look disposable:
+
+- Files and folders of any kind — including generated output (`report.json`, `test-results/`, `bug-reports/`, `__pycache__/`), scratch copies, and anything you created yourself earlier in the session.
+- Git branches (local or remote), tags, stashes, and anything that discards work (`git clean`, `git reset --hard`, `git checkout -- <path>`).
+- Commands that delete as a side effect, e.g. `rm -rf dir && cp -r ...` to "refresh" a folder, or a tool flag that wipes an output directory first.
+
+Ask first, say exactly what would be deleted and why, and wait for a yes. A go-ahead covers only the items named in that question. If a clean state is needed for verification, prefer a new, differently named folder over deleting an old one.
+
 ## What this is
 
 `mk-qa-master` is a Python MCP server (stdio) plus a cross-host agent skill that lets an AI client drive test suites: analyze → generate → run → report → optimize. It is published to PyPI and has been under a **v1.0 stability lock** since 2026-06-02 — the MCP tool surface is a frozen public contract (see "Stability lock" below, it shapes almost every change).
@@ -32,6 +44,8 @@ Other suites, not part of `pytest tests/`:
 ### Windows caveats (CI is Linux-only)
 
 - Run pytest with `PYTHONUTF8=1`; otherwise tests that `read_text()` without an encoding fail with `UnicodeDecodeError: 'cp950'`.
+- `mk-qa-master doctor` (plain and `--json`) crashes with `UnicodeEncodeError: 'cp950'` when its output is redirected or piped, because it prints `✓` / `≥`. `PYTHONUTF8=1 mk-qa-master doctor` works. Not checked on an interactive console.
+- Through a stdio MCP client, `run_tests` hangs until `QA_TIMEOUT_SECONDS` because the pytest subprocess inherits the server's stdin (`docs/bug-reports/windows-run-tests-stdin-hang.md`). `examples/mobile-h5/start_server_windows.py` is a launcher that works around it without touching `src/`.
 - Even then, ~21 tests in `tests/test_runner_api_security*.py` fail locally: `load_spec()` in `runners/api_security.py` runs `urlparse` on the spec location, so a bare `C:\...` path is read as URL scheme `c` and `file://C:\...` loses its path to netloc → `spec_load_failed`. Only `file:///C:/...` works. CI is Linux-only, so don't treat these as regressions from an unrelated change. Details: `docs/bug-reports/windows-file-url.md`.
 
 ## Architecture
@@ -96,7 +110,7 @@ The 22 core tools (name + `inputSchema`; descriptions are free to change) are fr
 - PR templates in `.github/PULL_REQUEST_TEMPLATE/` (`feat-tool.md`, `feat-runner.md`, `feat-bookend.md`, `release.md`) are checklists of the paperwork each change type needs — read the matching one before starting that kind of change.
 - Features ship as numbered PR series against a locked PRD in `docs/prd-*.md`; commit subjects follow `feat(vX.Y.Z): …` / `fix(vX.Y.Z): …` / `release(vX.Y.Z): …`.
 - External PRs are auto-closed by `external-pr-policy.yml` (solo-maintained repo).
-- `README.zh-TW.md` mirrors `README.md`.
+- `README.zh-TW.md` is the Traditional Chinese README. It lags behind `README.md` (several newer sections are missing) — see `docs/bug-reports/docs-code-mismatch.md`.
 
 ## Stale docs to distrust
 
