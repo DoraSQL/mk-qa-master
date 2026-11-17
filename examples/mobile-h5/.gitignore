@@ -1,0 +1,7 @@
+# 執行測試後自動產生的檔案，不需要放進版本控制
+report.json
+report.html
+junit.xml
+optimization-plan.md
+test-results/
+bug-reports/
