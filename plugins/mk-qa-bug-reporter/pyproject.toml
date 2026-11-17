@@ -1,0 +1,22 @@
+[project]
+name = "mk-qa-bug-reporter"
+version = "0.1.0"
+description = "mk-qa-master plugin: turn failed tests into Jira-ready Markdown bug reports (one report per distinct error)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["mk-qa-master>=1.5,<2"]
+
+# 這一段就是「登記表」：告訴 mk-qa-master 測試跑完後要呼叫哪個函式。
+[project.entry-points."mk_qa_master.result_hooks"]
+bug_reporter = "mk_qa_bug_reporter.hook:on_result"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mk_qa_bug_reporter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
